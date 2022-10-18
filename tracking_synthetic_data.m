@@ -1,0 +1,722 @@
+%%
+% This code generates Figures 2 and 3 in the paper "Iterative and Continuous-time
+% Soft-Thresholding with a Dynamic Input" by Aurèle Balavoine, Christopher J.
+% Rozell and Justin K. Romberg
+
+% set plot parameters
+set(0,'DefaultLineLineWidth',2); 
+set(0,'DefaultLineMarkersize',10); 
+set(0,'DefaultTextFontsize',16); 
+set(0,'DefaultAxesFontsize',16); 
+set(0,'defaultaxeslinewidth',1);
+
+%% %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% Figure 2 (a): Vary the ISTA iteration number P with support changes
+
+clear all
+
+% To generate the same figures as the paper:
+rand('seed',931316785)
+randn('seed',931316785);
+
+% set to 1 to save the results
+saveres = 0;
+
+% Number of values of P
+k=5;
+% Maximum P value
+Pmax = 30;
+% sparsity of the input
+s=40;
+% dimension of the input
+N=2*256;
+% number of measurements
+M=256;
+% number of trials per value of P
+nb = 1000;
+% number k of time samples of measurements
+nT = 40; 
+% energy in the initial frame of the target
+eta = 1;
+% max energy in the derivative
+mu = 0.8; 
+% number of ISTA iterations per time sample
+Pval = [1,2,3,5,10];
+% maximum frequency of support changes per entry
+Fmax = 3;
+% maximum number of entries whose support changes
+nChange = 10;
+
+% cell of results for fig 2
+rMSE_l = cell(1,k);
+for i=1:k
+    rMSE_l{i} = zeros(nT*Pval(i)+1, 1);
+end
+rMSE_kP = zeros(nT+1,k);
+% array of results
+l2_dist_at_kP = zeros(nT+1,k);
+% Initial state for the LCA
+% init=zeros(N,1);
+% ISTA threshold
+params.lambda = 0.05;
+% set to one to see output at each frame
+params.verbose = 0;
+
+w = waitbar(0,'Estimated time remaining is -- minute(s)',...
+    'units','normalized','Position',[0.1,0.8,0.3,0.1]);
+maxit = k*nb;
+currit = 0;
+tstart = tic;
+
+for l=1:nb
+    % create sparse vector
+    a0=zeros(N,nT); % sparse signal
+    ind=randperm(N); % random non-zero locations
+    ind=ind(1:s);
+    % random amplitudes
+    aval = randn(s,1);
+    aval = eta*aval/norm(aval);
+    % build random target signal
+    a0(ind,1) = aval;
+    for nn = 2:nT
+        a0(ind,nn) = sqrt((eta^2-mu^2)/eta^2)*a0(ind,nn-1)...
+            + mu/sqrt(s)*randn(s,1);
+    end
+
+    % Create random matrix of measurement
+    Phi=rand(M,N);
+    Phi = orth(Phi')';
+    for jj=1:N
+        Phi(:,jj)=Phi(:,jj)./norm(Phi(:,jj)); % normalize the columns to 1
+    end
+    
+    % Create the function handle for Phi and Phi^t
+    Phi_FUN = @(x) Phi*x;
+    Phit_FUN = @(x) Phi'*x;
+    MEAS1_FUN.Phi = Phi_FUN;
+    MEAS1_FUN.Phit = Phit_FUN;
+    MEAS_FUN = {MEAS1_FUN};
+    
+    % ISTA timestep
+    params.tau = 1;
+%     params.tau = 1/norm(Phi*Phi');
+
+    for i = 1:k
+        % Create support change
+        indChange = randperm(s);
+        indChange = ind(indChange(1:nChange));
+        a1= cos(2*pi*linspace(0,1,nT)' * Fmax*rand(1,nChange) ...
+            + ones(nT, 1)*2*pi*randn(1,nChange))';
+        atemp = a0(indChange,:);
+        a0(indChange,:) = atemp.*max(a1,0);
+        % add new indices
+        indNew = setdiff((1:N),ind);
+        new = randperm(N-s);
+        indNew = indNew(new(1:nChange));
+        a0(indNew,:) = atemp.*(-min(a1,0));
+        
+        % Create measurement vector
+        y0=Phi*a0;
+        sigma=0.3*norm(y0(:,1))/sqrt(M);
+        y=y0+sigma*randn(M,nT);
+        
+        % number of ISTA iterations
+        params.niter = Pval(i);
+        
+        % run ISTA
+        [coef, rMSE, PSNR, time, rMSEt] = ISTA_streaming(y, MEAS_FUN, params, a0);
+
+        rMSE_l{i} = rMSE_l{i} + rMSEt;
+        rMSE_kP(:,i) = rMSE_kP(:,i) + rMSE;
+        l2_dist_at_kP(1,i) = l2_dist_at_kP(1,i) + sqrt(sum(a0(:,1).^2));
+        l2_dist_at_kP(2:end,i) = l2_dist_at_kP(2:end,i) + sqrt(sum((coef - a0).^2))';
+        
+        currit = currit+1;
+        esttime =  round((maxit - currit)/currit*toc(tstart)/60);
+        waitbar(currit/maxit,w,['Estimated time remaining is ', num2str(esttime), ' minute(s)']);
+    end
+end
+close(w)
+for i=1:k
+    rMSE_l{i} = rMSE_l{i}/nb;
+end
+rMSE_kP = rMSE_kP/nb;
+l2_dist_at_kP = l2_dist_at_kP/nb;
+
+% Save
+
+timenow = datestr(fix(clock),15);
+savename = ['ISTA_Pval_' datestr(fix(clock),10) '_' ...
+    datestr(fix(clock),5) '_' datestr(fix(clock),7) '_' timenow(1:2) '.mat'];
+if saveres
+    save(savename, 'rMSE_l', 'rMSE_kP', 'l2_dist_at_kP', 'params', 'sigma', ...
+        's', 'mu', 'eta', 'Pval', 'nT', 'nb', 'nChange')
+end
+
+%% Figure 2 (a): Effect of Parameter P
+
+k = numel(Pval);
+% colors = fireprint(k+50);
+colors = hot(k+3);
+line_style_list = {'--', '-', '-.', '-', ':'};
+marker_list = {'none','none','none','none','none','d'};
+markersize_list = [1,1,1,3,3];
+line_width_list = [3,3,3,4,3];
+
+figure('units','pixels','Position',[50 50 600 450]);
+for i=1:k
+    semilogy(l2_dist_at_kP(1:end,i),'Color',colors(i,:),...
+        'DisplayName',['P = ' num2str(Pval(i))],...
+        'LineWidth', line_width_list(i),...
+        'linestyle',line_style_list{mod(i-1,5)+1},...
+        'MarkerSize',markersize_list(mod(i-1,5)+1),...
+        'Marker',marker_list{mod(i-1,5)+1})
+    hold on
+end
+hold off
+xlim([0 nT])
+figaxes = gca();
+set(figaxes,'units','pixels','Position',[90 60 480 360]);
+legend('show', 'location','northeast')
+xlabel('kP')
+hYlab = ylabel('');
+set(hYlab, 'Interpreter', 'latex');
+ylabel('$\|a[kP]-a^{\dagger}[kP-1]\|_2$','Fontsize',18);
+
+
+%% %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% Figure 2 (b): Vary the derivative in the energy mu with support changes
+
+clear all
+
+% To generate the same figures as the paper:
+rand('seed',931316785)
+randn('seed',931316785);
+
+% set to 1 to save the results
+saveres = 0;
+
+% Number of values of mu
+k=5;
+% sparsity of the input
+s=40;
+% dimension of the input
+N=2*256;
+% number of measurements
+M=256;
+% number of trials per value of mu
+nb = 1000;
+% number k of time samples of measurements
+nT = 40; 
+% energy in the initial frame of the target
+eta = 1;
+% number of ISTA iterations
+P = 1;
+% max energy in the derivative
+muval = 0.01*floor(linspace(10,90,k)); 
+
+% cell of results for fig 2
+rMSE_l = zeros(nT*P+1, k);
+rMSE_kP = zeros(nT+1, k);
+% array of results for fig 3
+l2_dist_at_kP = zeros(nT+1,k);
+% Initial state for the LCA
+% init=zeros(N,1);
+% ISTA threshold
+params.lambda = 0.05; %0.25;
+% set to one to see output at each frame
+params.verbose = 0;
+% number of ISTA iterations
+params.niter = P;
+% maximum frequency of support changes per entry
+Fmax = 3;
+% maximum number of entries whose support changes
+nChange = 10;
+
+w = waitbar(0,'Estimated time remaining is -- minute(s)',...
+    'units','normalized','Position',[0.1,0.8,0.3,0.1]);
+maxit = k*nb;
+currit = 0;
+tstart = tic;
+
+for i=1:k
+    mu = muval(i);
+    for l = 1:nb
+        % create sparse vector
+        a0=zeros(N,nT); % sparse signal
+        ind=randperm(N); % random non-zero locations
+        ind=ind(1:s);
+        % random amplitudes
+        aval = randn(s,1);
+        aval = eta*aval/norm(aval);
+        % build random target signal
+        a0(ind,1) = aval;
+        for nn = 2:nT
+            a0(ind,nn) = sqrt((eta^2-mu^2)/eta^2)*a0(ind,nn-1)...
+                + mu/sqrt(s)*randn(s,1);
+        end
+
+        % Create random matrix of measurement
+        Phi=rand(M,N);
+        Phi = orth(Phi')';
+        for jj=1:N
+            Phi(:,jj)=Phi(:,jj)./norm(Phi(:,jj)); % normalize the columns to 1
+        end
+
+        % Create the function handle for Phi and Phi^t
+        Phi_FUN = @(x) Phi*x;
+        Phit_FUN = @(x) Phi'*x;
+        MEAS1_FUN.Phi = Phi_FUN;
+        MEAS1_FUN.Phit = Phit_FUN;
+        MEAS_FUN = {MEAS1_FUN};
+
+        % Create support change
+        indChange = randperm(s);
+        indChange = ind(indChange(1:nChange));
+        a1= cos(2*pi*linspace(0,1,nT)' * Fmax*rand(1,nChange) ...
+            + ones(nT, 1)*2*pi*randn(1,nChange))';
+        atemp = a0(indChange,:);
+        a0(indChange,:) = atemp.*max(a1,0);
+        % add new indices
+        indNew = setdiff((1:N),ind);
+        new = randperm(N-s);
+        indNew = indNew(new(1:nChange));
+        a0(indNew,:) = atemp.*(-min(a1,0));
+        
+        % Create measurement vector
+        y0=Phi*a0;
+        sigma=0.3*norm(y0(:,1))/sqrt(M);
+        y=y0+sigma*randn(M,nT);
+
+        % ISTA timestep
+        params.tau = 1;
+    %     params.tau = 1/norm(Phi*Phi');
+        
+        % run ISTA
+        [coef, rMSE, PSNR, time, rMSEt] = ISTA_streaming(y, MEAS_FUN, params, a0);
+
+        rMSE_l(:,i) = rMSE_l(:,i) + rMSEt;
+        rMSE_kP(:,i) = rMSE_kP(:,i) + rMSE;
+        l2_dist_at_kP(1,i) = l2_dist_at_kP(1,i) + sqrt(sum(a0(:,1).^2));
+        l2_dist_at_kP(2:end,i) = l2_dist_at_kP(2:end,i) + sqrt(sum((coef - a0).^2))';
+        
+        currit = currit+1;
+        esttime =  round((maxit - currit)/currit*toc(tstart)/60);
+        waitbar(currit/maxit,w,['Estimated time remaining is ', num2str(esttime), ' minute(s)']);
+    end
+end
+close(w)
+rMSE_l = rMSE_l/nb;
+rMSE_kP = rMSE_kP/nb;
+l2_dist_at_kP = l2_dist_at_kP/nb;
+
+% Save
+tau = params.tau;
+
+timenow = datestr(fix(clock),15);
+savename = ['ISTA_muval_' datestr(fix(clock),10) '_' ...
+    datestr(fix(clock),5) '_' datestr(fix(clock),7) '_' timenow(1:2) '.mat'];
+if saveres
+    save(savename, 'rMSE_l', 'rMSE_kP', 'l2_dist_at_kP', 'params', 'sigma', ...
+        's', 'muval', 'eta', 'P', 'nT', 'nb', 'nChange')
+end
+
+%% Figure 2 (b): Effect of parameter mu
+
+k = numel(muval);
+% colors = fireprint(k+50);
+colors = hot(k+3);
+line_style_list = {'--', '-', '-.', '-', ':'};
+marker_list = {'none','none','none','none','none','d'};
+markersize_list = [1,1,1,3,3];
+line_width_list = [3,3,3,4,3];
+fval = 0;
+
+figure('units','pixels','Position',[50 50 600 450]);
+for i=1:k
+    semilogy(l2_dist_at_kP(1:end,i),'Color',colors(i,:),...
+        'DisplayName',['\mu = ' num2str(muval(i))],...
+        'LineWidth', line_width_list(i),...
+        'linestyle',line_style_list{mod(i-1,5)+1},...
+        'MarkerSize',markersize_list(mod(i-1,5)+1),...
+        'Marker',marker_list{mod(i-1,5)+1})
+    hold on
+end
+hold off
+xlim([0 nT])
+figaxes = gca();
+set(figaxes,'units','pixels','Position',[90 60 480 360]);
+legend('show', 'location','northeast')
+xlabel('kP')
+hYlab = ylabel('');
+set(hYlab, 'Interpreter', 'latex');
+ylabel('$\|a[kP]-a^{\dagger}[kP-1]\|_2$','Fontsize',18);
+
+%% %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% Figure 3: Plot of the steady-state with varying P and mu and support changes
+
+clear all
+
+% To generate the same figures as the paper:
+rand('seed',931316785)
+randn('seed',931316785);
+
+% set to 1 to save the results
+saveres = 0;
+
+% Number of values of mu
+kmu=1;
+% Number of values of P
+kP=10;
+% Maximum P value
+Pmax = 10;
+% sparsity of the input
+s=40;
+% dimension of the input
+N=2*256;
+% number of measurements
+M=256;
+% number of trials per value of mu
+nb = 1000;
+% number k of time samples of measurements
+nT = 15; 
+% energy in the initial frame of the target
+eta = 1;
+% number of ISTA iterations
+Pval = round(linspace(1,Pmax,kP));
+% max energy in the derivative
+muval = 0.01*floor(linspace(10,80,kmu)); 
+
+% cell of results for fig 2
+rMSE_l = cell(kP,kmu);
+for i=1:kP
+    for j=1:kmu
+        rMSE_l{i,j} = zeros(nT*Pval(i)+1, 1);
+    end
+end
+rMSE_kP = zeros(nT+1,kP,kmu);
+% array of results for fig 3
+l2_dist_at_kP = zeros(nT+1,kP,kmu);
+% Initial state for the LCA
+% init=zeros(N,1);
+% ISTA threshold
+params.lambda = 0.05; %0.25;
+% set to one to see output at each frame
+params.verbose = 0;
+% maximum frequency of support changes per entry
+Fmax = 3;
+% maximum number of entries whose support changes
+nChange = 10;
+
+w = waitbar(0,'Estimated time remaining is -- minute(s)',...
+    'units','normalized','Position',[0.1,0.8,0.3,0.1]);
+maxit = kmu*kP*nb;
+currit = 0;
+tstart = tic;
+
+for j=1:kmu
+    mu = muval(j);
+    for l=1:nb
+        % create sparse vector
+        a0=zeros(N,nT); % sparse signal
+        ind=randperm(N); % random non-zero locations
+        ind=ind(1:s);
+        % random amplitudes
+        aval = randn(s,1);
+        aval = eta*aval/norm(aval);
+        % build random target signal
+        a0(ind,1) = aval;
+        for nn = 2:nT
+            a0(ind,nn) = sqrt((eta^2-mu^2)/eta^2)*a0(ind,nn-1)...
+                + mu/sqrt(s)*randn(s,1);
+        end
+
+        % Create random matrix of measurement
+        Phi=rand(M,N);
+        Phi = orth(Phi')';
+        for jj=1:N
+            Phi(:,jj)=Phi(:,jj)./norm(Phi(:,jj)); % normalize the columns to 1
+        end
+
+        % Create support change
+        indChange = randperm(s);
+        indChange = ind(indChange(1:nChange));
+        a1= cos(2*pi*linspace(0,1,nT)' * Fmax*rand(1,nChange) ...
+            + ones(nT, 1)*2*pi*randn(1,nChange))';
+        atemp = a0(indChange,:);
+        a0(indChange,:) = atemp.*max(a1,0);
+        % add new indices
+        indNew = setdiff((1:N),ind);
+        new = randperm(N-s);
+        indNew = indNew(new(1:nChange));
+        a0(indNew,:) = atemp.*(-min(a1,0));
+
+        % Create the function handle for Phi and Phi^t
+        Phi_FUN = @(x) Phi*x;
+        Phit_FUN = @(x) Phi'*x;
+        MEAS1_FUN.Phi = Phi_FUN;
+        MEAS1_FUN.Phit = Phit_FUN;
+        MEAS_FUN = {MEAS1_FUN};
+        
+        % Create measurement vector
+        y0=Phi*a0;
+        sigma=0.3*norm(y0(:,1))/sqrt(M);
+        y=y0+sigma*randn(M,nT);
+        
+        % ISTA timestep
+        params.tau = 1;
+    %     params.tau = 1/norm(Phi*Phi');
+
+        for i = 1:kP
+            % number of ISTA iterations
+            params.niter = Pval(i);
+
+            % run ISTA
+            [coef, rMSE, PSNR, time, rMSEt] = ISTA_streaming(y, MEAS_FUN, params, a0);
+
+            rMSE_l{i,j} = rMSE_l{i,j} + rMSEt;
+            rMSE_kP(:,i,j) = rMSE_kP(:,i,j) + rMSE;
+            l2_dist_at_kP(1,i,j) = l2_dist_at_kP(1,i,j) + sqrt(sum(a0(:,1).^2));
+            l2_dist_at_kP(2:end,i,j) = l2_dist_at_kP(2:end,i,j) + sqrt(sum((coef - a0).^2))';
+
+            currit = currit+1;
+            esttime =  round((maxit - currit)/currit*toc(tstart)/60);
+            waitbar(currit/maxit,w,['Estimated time remaining is ', num2str(esttime), ' minute(s)']);
+        end
+    end
+end
+close(w)
+for i=1:kP
+    for j=1:kmu
+        rMSE_l{i,j} = rMSE_l{i,j}/nb;
+    end
+end
+rMSE_kP = rMSE_kP/nb;
+l2_dist_at_kP = l2_dist_at_kP/nb;
+
+% Save
+tau = params.tau;
+
+timenow = datestr(fix(clock),15);
+savename = ['ISTA_finalVal_' datestr(fix(clock),10) '_' ...
+    datestr(fix(clock),5) '_' datestr(fix(clock),7) '_' timenow(1:2) '.mat'];
+if saveres
+    save(savename, 'rMSE_l', 'rMSE_kP', 'l2_dist_at_kP', 'params', 'sigma', ...
+        's', 'muval', 'eta', 'Pval', 'nT', 'nb', 'nChange')
+end
+
+%% Figure 3: steady state as a function of P
+
+kmu = length(muval);
+kP = length(Pval);
+% colors = fireprint(k+50);
+colors = hot(kmu+3);
+line_style_list = {'--', '-', '-.', '-', ':'};
+marker_list = {'none','none','none','none','none','d'};
+markersize_list = [1,1,1,3,3];
+line_width_list = [3,3,3,4,3];
+
+% plot steady-state values
+finalVal = zeros(kP,kmu);
+figure('units','pixels','Position',[50 50 600 450]);
+hold on
+for j=1:kmu
+    for i=1:kP
+        finalVal(i,j) = l2_dist_at_kP(end,i,j);
+    end
+    plot(Pval,finalVal(:,j),'Color',colors(j,:),... % 'DisplayName',['\mu = ' num2str(muval(j))],...
+        'DisplayName','true',...
+        'LineWidth', line_width_list(mod(j-1,5)+1),...
+        'linestyle',line_style_list{mod(j-1,5)+1},...
+        'MarkerSize',markersize_list(mod(j-1,5)+1),...
+        'Marker',marker_list{mod(j-1,5)+1}) 
+    func= @(x) sum((finalVal(:,j)'- muval(j)*(x(1).^Pval)./(1-(x(1).^Pval)) - x(2)).^2);
+    xest = fmincon(func,[0.9; 0],[],[],[],[],[0 ;0],[1 ;Inf]);
+    plot(Pval, muval(j)*(xest(1).^Pval)./(1-xest(1).^Pval)+xest(2),...
+        '--','linewidth',2,'Color',colors(j,:),'DisplayName','fitted')
+end
+figaxes = gca();
+set(figaxes,'units','pixels','Position',[100 60 480 360]);
+xlim([Pval(1) Pval(end)])
+leg = legend('show', 'location','northeast');
+set(leg,'Fontsize',26)
+xlabel('P','Fontsize',22)
+ylabel('steady state','Fontsize',22)
+
+%% %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% Figure 4: Vary the signal sparsity S and threshold \lambda
+
+clear all
+
+% set to 1 to save the results
+saveres = 0;
+
+% To generate the same figures as the paper:
+rand('seed',904363097)
+randn('seed',904363097);
+
+% Number of values of S and lambda
+k = 60;
+% sparsity of the input
+ss=floor(linspace(2,100,k));
+% dimension of the input
+N=400;
+% number of measurements
+M=200;
+% Threshold
+lambdaa=linspace(0.01,0.2,k);
+% number k of time samples of measurements
+nT = 10; 
+% max energy in the signal
+eta = 1;
+% max energy in the derivative
+mu = 1; 
+% number of ISTA iterations
+params.niter = 5;
+%number of trials per value of S
+nb = 100;
+% cell of results for fig 3
+q = zeros(k,k);
+% Initial state for the LCA
+init=zeros(N,1);
+% maximum frequency of support changes per entry
+Fmax = 3;
+% maximum number of entries whose support changes
+MaxnChange = 10;
+
+w = waitbar(0,'simulations running');
+maxit = k*k*nb;
+currit = 0;
+tstart = tic;
+for i=1:k
+    s=ss(i);  
+    for j=1:k
+        params.lambda = lambdaa(j);        
+        for l=1:nb
+            
+            % create sparse vector
+            a0=zeros(N,nT); % sparse signal
+            ind=randperm(N); % random non-zero locations
+            ind=ind(1:s);
+            % random amplitudes
+            aval = randn(s,1);
+            aval = eta*aval/norm(aval);
+            % build random target signal
+            a0(ind,1) = aval;
+            for nn = 2:nT
+                a0(ind,nn) = sqrt((eta^2-mu^2)/eta^2)*a0(ind,nn-1)...
+                + mu/sqrt(s)*randn(s,1); %1/sqrt(2)*a0(ind,nn-1) + (mu/sqrt(2*s))*randn(s,1);
+            end
+
+            % Create support change
+            nChange = min(floor(s/2),MaxnChange);
+            indChange = randperm(s);
+            indChange = ind(indChange(1:nChange));
+            a1= cos(2*pi*linspace(0,1,nT)' * Fmax*rand(1,nChange) ...
+                + ones(nT, 1)*2*pi*randn(1,nChange))';
+            atemp = a0(indChange,:);
+            a0(indChange,:) = atemp.*max(a1,0);
+            % add new indices
+            indNew = setdiff((1:N),ind);
+            new = randperm(N-s);
+            indNew = indNew(new(1:nChange));
+            a0(indNew,:) = atemp.*(-min(a1,0));
+            
+            % Create random matrix of measurement
+            Phi=rand(M,N);
+            Phi = orth(Phi')';
+            for jj=1:N
+                Phi(:,jj)=Phi(:,jj)./norm(Phi(:,jj)); % normalize the columns to 1
+            end
+
+            % Create the function handle for Phi and Phi^t
+            Phi_FUN = @(x) Phi*x;
+            Phit_FUN = @(x) Phi'*x;
+            MEAS1_FUN.Phi = Phi_FUN;
+            MEAS1_FUN.Phit = Phit_FUN;
+            MEAS_FUN = {MEAS1_FUN};
+
+            % Create measurement vector
+            y0=Phi*a0;
+            sigma=0.3*norm(y0(:,1))/sqrt(M);
+            y=y0+sigma*randn(M,nT);
+
+            % ISTA timestep
+            params.tau = 1;
+%             params.tau = 1/norm(Phi*Phi');
+        
+            % run ISTA
+            [coef, coefCost] = ISTA_streaming_exp(y, MEAS_FUN, params, @L0Cost);
+
+            q(j,i) = q(j,i) + max(coefCost);
+            
+            currit = currit+1;
+            esttime =  round((maxit - currit)/currit*toc(tstart)/60);
+            waitbar(currit/maxit,w,['Estimated time remaining is ', num2str(esttime), ' minute(s)']);
+        end
+    end   
+end
+close(w)
+q = q/nb;
+
+timenow = datestr(fix(clock),15);
+savename = ['ISTA_coefCost_' datestr(fix(clock),10) '_' ...
+    datestr(fix(clock),5) '_' datestr(fix(clock),7) '_' timenow(1:2) '.mat'];
+if saveres
+    save(savename, 'sigma', 'ss', 'lambdaa', 'eta', 'mu', 'params', 'q', 'k')
+end
+
+%% Figure 4:
+% Ratio of the maximum number of active element q during convergence
+% over the sparsity level S. For instance, a value of 10 in the color bar means
+% that the biggest active set during convergence contains 10S active elements.
+
+qratio = q;
+for i=1:k
+    qratio(:,i) = qratio(:,i)/ss(i);
+end
+figure('units','pixels','Position',[50 50 600 500]);
+imagesc(ss,lambdaa,log10(qratio))
+set(gca, 'YDir', 'normal')
+axis square;
+figaxes = gca();
+set(figaxes,'units','pixels','Position',[90 30 480 480]);
+xlabel('sparsity S', 'FontSize', 22)
+ylabel('threshold \lambda', 'FontSize', 22)
+%title('Ratio of maximum support size over sparsity level: q/S')
+colormap(flipud(hot))
+h = colorbar;
+minval = min(get(h,'Ytick'));
+tvals = floor(logspace(log10(min(min(q))),log10(max(max(q))),5));
+colorbar('Ytick', [minval log10(tvals)], 'YTickLabel', ['0 |',sprintf('%g |',[tvals])])
+
+%% add best fit for constant q=4 value
+
+limitThreshInd = zeros(1,k);
+qratioval = 4;
+tol = 0.5;
+w = waitbar(0,'simulations running');
+for i=1:k
+    cont = 1;
+    if isempty(find(qratio(:,i)>qratioval,1))
+        limitThreshInd(i) = min(lambdaa);
+        cont = 0;
+    end
+    while cont
+        ThreshInd = find(abs(qratio(:,i)-qratioval)<tol); 
+        if isempty(ThreshInd)
+            tol = tol*2;
+        elseif numel(ThreshInd)>4
+            tol = tol/3;
+        else
+            limitThreshInd(i) = mean(lambdaa(ThreshInd));
+            cont = 0;
+        end
+    end
+    waitbar(i/k,w);
+end
+
+cmap = hot;
+hold on
+P = polyfit(1./sqrt(ss),limitThreshInd,1);
+plot(ss,polyval(P,1./sqrt(ss)),'linewidth',2,'color',cmap(10,:))
